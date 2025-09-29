@@ -8,11 +8,15 @@ from datetime import datetime
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout,
-    QLabel, QTableWidget, QTableWidgetItem, QSplitter
+    QLabel, QTableWidget, QTableWidgetItem, QSplitter,
+    QHBoxLayout, QSizePolicy
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtCore import Qt, QThread, Signal, Slot
 from PySide6.QtGui import QColor
+
+# pyqtgraph for sparkline
+import pyqtgraph as pg
 
 # NOTE: websockets is an asyncio library
 import websockets
@@ -140,6 +144,9 @@ class MainWindow(QMainWindow):
         # initial data
         self.df = fetch_ohlcv(limit=100)
 
+        # track which row is selected in the table
+        self.selected_row = None
+
         # layout
         splitter = QSplitter(Qt.Horizontal)
 
@@ -148,33 +155,45 @@ class MainWindow(QMainWindow):
         self.webview.setUrl("https://www.binance.com/en/futures/SOLUSDT")
         splitter.addWidget(self.webview)
 
-        # right: indicators
+        # -------------------------------------------------
+        # Right: Master / Detail layout
+        # -------------------------------------------------
         right_widget = QWidget()
-        right_layout = QVBoxLayout()
-        
-        # Price label polished
+        right_layout = QVBoxLayout(right_widget)
+
+        # --- Summary row ---
+        summary_widget = QWidget()
+        summary_layout = QHBoxLayout(summary_widget)
+
+        # price label
         self.price_label = QLabel("Current Price: ...")
-        self.price_label.setAlignment(Qt.AlignCenter)
         font = self.price_label.font()
         font.setPointSize(16)
         font.setBold(True)
         self.price_label.setFont(font)
+        summary_layout.addWidget(self.price_label)
 
-        # Status bar
-        self.status = self.statusBar()
-        self.status.showMessage("Connecting to Binance...")
+        # RSI + EMA labels
+        self.rsi_label = QLabel("RSI: --")
+        self.ema_label = QLabel("EMA9/EMA21: -- / --")
+        summary_layout.addWidget(self.rsi_label)
+        summary_layout.addWidget(self.ema_label)
+        summary_layout.addStretch()
 
-        # Table polished
-        self.table = QTableWidget(0, 11)
-        self.table.setHorizontalHeaderLabels([
-            "Timeframe", "Open", "High", "Low", "Close", "Volume",
-            "RSI", "EMA9", "EMA21", "Signal", "Closed?"
-        ])
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.horizontalHeader().setDefaultSectionSize(100)
-        self.table.verticalHeader().setVisible(False)
-        self.table.setAlternatingRowColors(True)
-        self.table.setStyleSheet("""
+        right_layout.addWidget(summary_widget)
+
+        # --- Splitter cho bảng (master) và panel chi tiết ---
+        detail_splitter = QSplitter(Qt.Horizontal)
+
+        # Compact table (master)
+        self.compact_table = QTableWidget(0, 6)
+        self.compact_table.setHorizontalHeaderLabels(
+            ["Timeframe", "Close", "Δ%", "Volume", "RSI", "Signal"]
+        )
+        self.compact_table.horizontalHeader().setStretchLastSection(True)
+        self.compact_table.verticalHeader().setVisible(False)
+        self.compact_table.setAlternatingRowColors(True)
+        self.compact_table.setStyleSheet("""
             QTableWidget {
                 gridline-color: #ccc;
                 font-size: 12px;
@@ -186,13 +205,43 @@ class MainWindow(QMainWindow):
                 border: 1px solid #ccc;
             }
         """)
+        detail_splitter.addWidget(self.compact_table)
 
-        right_layout.addWidget(self.price_label)
-        right_layout.addWidget(self.table)
-        right_widget.setLayout(right_layout)
+        # Detail panel (chi tiết row được chọn)
+        self.detail_panel = QWidget()
+        d_layout = QVBoxLayout(self.detail_panel)
+        self.detail_info = QLabel("Select a row to see details...")
+        self.detail_info.setWordWrap(True)
+        d_layout.addWidget(self.detail_info)
+
+        # --- sparkline / mini chart (pyqtgraph) ---
+        # Create PlotWidget and style it as a compact sparkline
+        self.detail_plot = pg.PlotWidget()
+        self.detail_plot.setMinimumHeight(140)
+        self.detail_plot.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+        # Minimal appearance for sparkline: hide axes and disable mouse
+        pl_item = self.detail_plot.getPlotItem()
+        pl_item.hideAxis('bottom')
+        pl_item.hideAxis('left')
+        pl_item.setMenuEnabled(False)
+        self.detail_plot.setMouseEnabled(x=False, y=False)
+
+        # Optionally remove background grid to be sparkline-like
+        pl_item.showGrid(x=False, y=False)
+
+        d_layout.addWidget(self.detail_plot)
+
+        detail_splitter.addWidget(self.detail_panel)
+
+        right_layout.addWidget(detail_splitter)
 
         splitter.addWidget(right_widget)
         self.setCentralWidget(splitter)
+
+        # Status bar
+        self.status = self.statusBar()
+        self.status.showMessage("Connecting to Binance...")
 
         # populate table initially
         self.refresh_table()
@@ -202,6 +251,9 @@ class MainWindow(QMainWindow):
         self.worker.kline_received.connect(self.on_kline)
         self.worker.error.connect(self.on_ws_error)
         self.worker.start()
+
+        # connect table row selection
+        self.compact_table.cellClicked.connect(self.on_row_selected)
 
     def closeEvent(self, event):
         # stop worker cleanly
@@ -219,8 +271,8 @@ class MainWindow(QMainWindow):
         """
         Payload example:
         {
-          "open_time": 169xxx..., "close_time": 169xxx..., "open": 1.23,
-          "high": 1.25, "low": 1.20, "close": 1.24, "volume": 123.4, "is_closed": False
+        "open_time": 169xxx..., "close_time": 169xxx..., "open": 1.23,
+        "high": 1.25, "low": 1.20, "close": 1.24, "volume": 123.4, "is_closed": False
         }
         """
         # Convert to df row-like
@@ -282,31 +334,40 @@ class MainWindow(QMainWindow):
 
         self.refresh_table()
 
+        # Nếu có hàng được chọn, cập nhật lại sparkline (use same index if still valid)
+        if self.selected_row is not None:
+            # clamp selected_row into new df range
+            sel = min(self.selected_row, len(self.df) - 1)
+            self.plot_sparkline(sel)
+
     def refresh_table(self):
         df = self.df.copy().reset_index(drop=True)
-        self.table.setRowCount(len(df))
+        self.compact_table.setRowCount(len(df))
+
         for i, row in df.iterrows():
+            # Change %
+            change_pct = ""
+            if i > 0 and pd.notna(row.get("close")):
+                prev = df.iloc[i-1].get("close")
+                if pd.notna(prev) and prev != 0:
+                    change_pct = f"{(row['close']/prev - 1)*100:.2f}%"
+
             vals = [
                 row.get("Timeframe", ""),
-                f"{row.get('open', 0):.6f}",
-                f"{row.get('high', 0):.6f}",
-                f"{row.get('low', 0):.6f}",
                 f"{row.get('close', 0):.6f}",
-                f"{row.get('volume', 0):.6f}",
+                change_pct,
+                f"{row.get('volume', 0):.2f}",
                 f"{row.get('RSI'):.2f}" if pd.notna(row.get("RSI")) else "",
-                f"{row.get('EMA9'):.6f}" if pd.notna(row.get("EMA9")) else "",
-                f"{row.get('EMA21'):.6f}" if pd.notna(row.get("EMA21")) else "",
-                row.get("Signal", ""),
-                "Yes" if row.get("close_time") and not pd.isna(row.get("close_time")) else ""
+                row.get("Signal", "")
             ]
+
             for j, v in enumerate(vals):
                 item = QTableWidgetItem(str(v))
-                # Align numbers to right for readability
-                if j in (1,2,3,4,5,6,7,8):
+                if j in (1,2,3,4):  # align numbers
                     item.setTextAlignment(Qt.AlignVCenter | Qt.AlignRight)
-                self.table.setItem(i, j, item)
+                self.compact_table.setItem(i, j, item)
 
-            # color row based on signal
+            # màu dòng theo Signal
             signal = row.get("Signal", "")
             if signal == "Long":
                 color = QColor(200, 255, 200)
@@ -316,11 +377,79 @@ class MainWindow(QMainWindow):
                 color = QColor(220, 220, 220)
             else:
                 color = QColor(255, 255, 255)
-            for j in range(self.table.columnCount()):
-                it = self.table.item(i, j)
+            for j in range(self.compact_table.columnCount()):
+                it = self.compact_table.item(i, j)
                 if it:
                     it.setBackground(color)
 
+        # cập nhật summary (RSI, EMA)
+        if not df.empty:
+            last_rsi = df["RSI"].iloc[-1]
+            last_ema9 = df["EMA9"].iloc[-1]
+            last_ema21 = df["EMA21"].iloc[-1]
+            self.rsi_label.setText(f"RSI: {last_rsi:.2f}" if pd.notna(last_rsi) else "RSI: --")
+            if pd.notna(last_ema9) and pd.notna(last_ema21):
+                self.ema_label.setText(f"EMA9/EMA21: {last_ema9:.2f} / {last_ema21:.2f}")
+            else:
+                self.ema_label.setText("EMA9/EMA21: -- / --")
+
+    def on_row_selected(self, row, col):
+        if row >= len(self.df):
+            return
+        self.selected_row = row  # remember selection
+        r = self.df.iloc[row]
+        detail_text = (
+            f"Time: {r.get('Timeframe','')}\n"
+            f"Open: {r.get('open',0):.6f}\n"
+            f"High: {r.get('high',0):.6f}\n"
+            f"Low: {r.get('low',0):.6f}\n"
+            f"Close: {r.get('close',0):.6f}\n"
+            f"Volume: {r.get('volume',0):.2f}\n"
+            f"RSI: {r.get('RSI', float('nan')):.2f}\n"
+            f"EMA9: {r.get('EMA9', float('nan')):.2f}\n"
+            f"EMA21: {r.get('EMA21', float('nan')):.2f}\n"
+            f"Signal: {r.get('Signal','')}"
+        )
+        self.detail_info.setText(detail_text)
+
+        # draw sparkline for this row
+        self.plot_sparkline(row)
+
+    def plot_sparkline(self, row_index, window=30):
+        """
+        Vẽ sparkline: lấy tối đa `window` giá close trước và bao gồm row_index.
+        row_index: int (index in self.df)
+        """
+        if self.df is None or len(self.df) == 0:
+            return
+        # clamp
+        row_index = int(max(0, min(row_index, len(self.df) - 1)))
+        start = max(0, row_index - window + 1)
+        closes = self.df["close"].iloc[start:row_index+1].astype(float).to_numpy()
+
+        if len(closes) == 0:
+            self.detail_plot.clear()
+            return
+
+        self.detail_plot.clear()
+
+        # Decide pen color by last vs first (green if up, red if down)
+        if closes[-1] >= closes[0]:
+            pen = pg.mkPen(color=(0, 180, 0), width=2)
+        else:
+            pen = pg.mkPen(color=(200, 0, 0), width=2)
+
+        # Plot line
+        x = list(range(len(closes)))
+        self.detail_plot.plot(x, closes, pen=pen, antialias=True)
+
+        # Highlight last point with a symbol
+        last_symbol = pg.ScatterPlotItem([x[-1]], [closes[-1]], size=8, brush=pen.color(), pen=pg.mkPen('w', width=1))
+        self.detail_plot.addItem(last_symbol)
+
+        # Optionally draw a faint fill under the curve
+        # (pyqtgraph doesn't have direct filled curve, we can approximate with a FillBetweenItem if needed)
+        # For simplicity we skip complex fill; keep sparkline minimal.
 
 # ------------------------
 # Run app
