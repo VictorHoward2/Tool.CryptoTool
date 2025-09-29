@@ -40,8 +40,8 @@ def fetch_ohlcv(symbol="SOLUSDT", interval="1m", limit=50):
     df["volume"] = df["volume"].astype(float)
 
     # Time columns and indicators
-    df["open_dt"] = pd.to_datetime(df["open_time"], unit="ms")
-    df["close_dt"] = pd.to_datetime(df["close_time"], unit="ms")
+    df["open_dt"] = pd.to_datetime(df["open_time"], unit="ms", utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
+    df["close_dt"] = pd.to_datetime(df["close_time"], unit="ms", utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
     df["Timeframe"] = df["open_dt"].dt.strftime("%H:%M:%S") + " - " + df["close_dt"].dt.strftime("%H:%M:%S")
 
     df["RSI"] = ta.rsi(df["close"], length=14)
@@ -224,8 +224,8 @@ class MainWindow(QMainWindow):
         # Recompute time columns and indicators for entire df (could be optimized)
         self.df["open_time"] = self.df["open_time"].astype(int)
         self.df["close_time"] = self.df["close_time"].astype(int)
-        self.df["open_dt"] = pd.to_datetime(self.df["open_time"], unit="ms")
-        self.df["close_dt"] = pd.to_datetime(self.df["close_time"], unit="ms")
+        self.df["open_dt"] = pd.to_datetime(self.df["open_time"], unit="ms", utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
+        self.df["close_dt"] = pd.to_datetime(self.df["close_time"], unit="ms", utc=True).dt.tz_convert("Asia/Ho_Chi_Minh")
         self.df["Timeframe"] = self.df["open_dt"].dt.strftime("%H:%M:%S") + " - " + self.df["close_dt"].dt.strftime("%H:%M:%S")
 
         # Indicators
