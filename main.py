@@ -151,12 +151,42 @@ class MainWindow(QMainWindow):
         # right: indicators
         right_widget = QWidget()
         right_layout = QVBoxLayout()
+        
+        # Price label polished
         self.price_label = QLabel("Current Price: ...")
-        self.table = QTableWidget(0, 11)  # extra column for timestamp (ms)
+        self.price_label.setAlignment(Qt.AlignCenter)
+        font = self.price_label.font()
+        font.setPointSize(16)
+        font.setBold(True)
+        self.price_label.setFont(font)
+
+        # Status bar
+        self.status = self.statusBar()
+        self.status.showMessage("Connecting to Binance...")
+
+        # Table polished
+        self.table = QTableWidget(0, 11)
         self.table.setHorizontalHeaderLabels([
             "Timeframe", "Open", "High", "Low", "Close", "Volume",
             "RSI", "EMA9", "EMA21", "Signal", "Closed?"
         ])
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.horizontalHeader().setDefaultSectionSize(100)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setAlternatingRowColors(True)
+        self.table.setStyleSheet("""
+            QTableWidget {
+                gridline-color: #ccc;
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background-color: #eee;
+                font-weight: bold;
+                padding: 4px;
+                border: 1px solid #ccc;
+            }
+        """)
+
         right_layout.addWidget(self.price_label)
         right_layout.addWidget(self.table)
         right_widget.setLayout(right_layout)
@@ -234,11 +264,22 @@ class MainWindow(QMainWindow):
         self.df["EMA21"] = ta.ema(self.df["close"], length=21)
         self.df["Signal"] = self.df.apply(calc_signal, axis=1)
 
-        # Update price label with latest close
+        # Update price label với màu
         last_close = float(self.df["close"].iloc[-1])
+        prev_close = float(self.df["close"].iloc[-2]) if len(self.df) > 1 else last_close
         self.price_label.setText(f"Current Price: {last_close:.6f} USDT")
 
-        # Refresh table (for simplicity we refresh full table)
+        if last_close > prev_close:
+            self.price_label.setStyleSheet("color: green;")
+        elif last_close < prev_close:
+            self.price_label.setStyleSheet("color: red;")
+        else:
+            self.price_label.setStyleSheet("color: black;")
+
+        # Cập nhật status bar
+        now_str = datetime.now().astimezone().strftime("%H:%M:%S")
+        self.status.showMessage(f"Last update: {now_str} | Connected ✅")
+
         self.refresh_table()
 
     def refresh_table(self):
