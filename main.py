@@ -138,7 +138,7 @@ class MainWindow(QMainWindow):
         self.resize(1600, 800)
 
         # initial data
-        self.df = fetch_ohlcv(limit=100)
+        self.df = fetch_ohlcv(limit=100).sort_values("open_time", ascending=True).reset_index(drop=True)
 
         # layout
         splitter = QSplitter(Qt.Horizontal)
@@ -283,7 +283,9 @@ class MainWindow(QMainWindow):
         self.refresh_table()
 
     def refresh_table(self):
-        df = self.df.copy().reset_index(drop=True)
+        # Hiển thị: mới nhất ở trên -> sắp xếp open_time giảm dần khi render
+        df = self.df.copy().sort_values("open_time", ascending=False).reset_index(drop=True)
+
         self.table.setRowCount(len(df))
         for i, row in df.iterrows():
             vals = [
